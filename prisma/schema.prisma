@@ -1,16 +1,15 @@
 // Delulu Cafe Smart Inventory — data model.
-// Local dev uses SQLite for zero-setup `npm run dev`. To move to production
-// Postgres/Supabase: change `provider` below to "postgresql", point
-// DATABASE_URL at it, restore the commented `enum` blocks in place of the
-// plain `String` fields they annotate, and run `prisma db push` — SQLite
-// does not support native enums, so this schema uses validated strings
-// (see src/lib/enums.ts for the canonical value lists + Zod schemas).
+// Uses Postgres (works on Vercel, Supabase, Neon, etc. — anywhere with a
+// real DATABASE_URL). "Enum" fields are modeled as validated strings rather
+// than native Postgres enums purely so this schema also works unmodified
+// against SQLite for quick local prototyping (see src/lib/enums.ts for the
+// canonical value lists + Zod schemas).
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

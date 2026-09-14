@@ -5,7 +5,10 @@ A Phase 1 build of the Delulu Cafe Smart Inventory & Waste Management System, by
 
 ```bash
 npm install
-npm run db:push     # creates the local SQLite database from the schema
+# set DATABASE_URL in .env to a Postgres connection string (Vercel Postgres,
+# Supabase, Neon, or a local Postgres — this project needs a real Postgres
+# database; SQLite does not work on serverless hosts like Vercel)
+npm run db:push     # creates the schema in that database
 npm run db:seed     # seeds Delulu Cafe demo data
 npm run dev          # http://localhost:3000
 ```
@@ -42,7 +45,7 @@ Being precise about this matters more than the feature list.
 | i18n — English / Norwegian / Tamil | **Real**, full UI chrome coverage in all three languages (`messages/*.json`), no hardcoded strings in components. Machine-assisted translations for NO/TA — have a native speaker review before production use. |
 | Audit log | **Real** for the actions wired so far (stock adjustments, purchase receipt, stock count completion, seed). Not yet on every mutation — see Known gaps. |
 | Authentication | **Real** — NextAuth Credentials provider, bcrypt-hashed passwords, JWT sessions. |
-| Database | **SQLite for local dev** (zero setup). Schema is Postgres-ready — see "Moving to Postgres" below. |
+| Database | **Postgres** (works on Vercel Postgres, Supabase, Neon, or any Postgres host). |
 | POS/webhook integrations, CSV sales import | **Not implemented** (Phase 2, per spec §38). `Sale.source` already models `POS`/`API`/`CSV` for when this is built. |
 | Real camera barcode/QR scanning | **Not implemented.** `Ingredient.sku` exists for lookup; camera scanning is Phase 2. |
 | Push / WhatsApp notifications | **Not implemented.** The `Notification` model supports `PUSH`/`WHATSAPP`/`EMAIL` channels; only in-app alert display is wired up. |
@@ -76,15 +79,21 @@ only callers of Prisma directly (besides server actions). The pure calculation f
 in `src/lib/inventory/*` never touch the database — that's what makes them unit-testable
 and reusable across the dashboard, reports, alerts, and AI assistant without drift.
 
-### Moving to Postgres / Supabase
+### Deploying to Vercel
 
-1. In `prisma/schema.prisma`, change `provider = "sqlite"` to `provider = "postgresql"`.
-2. Point `DATABASE_URL` in `.env` at your Postgres instance.
-3. Run `npx prisma db push` (or set up migrations with `prisma migrate`).
+1. Import the GitHub repo as a Vercel project.
+2. Add a Postgres database to the project (Vercel Storage tab → Create Database →
+   Postgres — this sets `DATABASE_URL` automatically) or point `DATABASE_URL` at your
+   own Supabase/Neon instance.
+3. Set `NEXTAUTH_SECRET` (a random string) and `NEXTAUTH_URL` (your deployment URL) as
+   environment variables.
+4. Redeploy, then run `npm run db:push && npm run db:seed` once against that
+   `DATABASE_URL` (locally, with it temporarily in your `.env`) to create the schema and
+   demo data.
 
-No application code changes are needed — the schema already avoids SQLite-only features
-(enums are modeled as validated strings specifically so this move is a non-event; see
-`src/lib/enums.ts` for the canonical value lists).
+Enums are modeled as validated strings rather than native Postgres enums (see
+`src/lib/enums.ts` for the canonical value lists) — a deliberate choice that keeps this
+schema portable to SQLite too, for anyone who wants a zero-setup local prototype.
 
 ---
 
