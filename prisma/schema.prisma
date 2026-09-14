@@ -1,0 +1,434 @@
+// Delulu Cafe Smart Inventory — data model.
+// Local dev uses SQLite for zero-setup `npm run dev`. To move to production
+// Postgres/Supabase: change `provider` below to "postgresql", point
+// DATABASE_URL at it, restore the commented `enum` blocks in place of the
+// plain `String` fields they annotate, and run `prisma db push` — SQLite
+// does not support native enums, so this schema uses validated strings
+// (see src/lib/enums.ts for the canonical value lists + Zod schemas).
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+model Business {
+  id        String   @id @default(cuid())
+  name      String
+  country   String   @default("Sri Lanka")
+  currency  String   @default("LKR")
+  createdAt DateTime @default(now())
+
+  locations    Location[]
+  users        User[]
+  categories   Category[]
+  ingredientDefinitions IngredientDefinition[]
+  ingredients  Ingredient[]
+  products     Product[]
+  suppliers    Supplier[]
+  sales        Sale[]
+  purchases    Purchase[]
+  wasteRecords WasteRecord[]
+  stockCounts  StockCount[]
+  adjustments  StockAdjustment[]
+  transactions InventoryTransaction[]
+  alerts       Alert[]
+  notifications Notification[]
+  auditLogs    AuditLog[]
+}
+
+model Location {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  address    String?
+  createdAt  DateTime @default(now())
+
+  userLocations UserLocation[]
+  ingredients   Ingredient[]
+  sales         Sale[]
+  purchases     Purchase[]
+  wasteRecords  WasteRecord[]
+  stockCounts   StockCount[]
+  adjustments   StockAdjustment[]
+  transactions  InventoryTransaction[]
+  alerts        Alert[]
+  auditLogs     AuditLog[]
+}
+
+// Role: "OWNER" | "MANAGER" | "EMPLOYEE"
+model User {
+  id           String   @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   @default("EMPLOYEE")
+  createdAt    DateTime @default(now())
+
+  locations       UserLocation[]
+  wasteRecords    WasteRecord[]
+  stockCounts     StockCount[]
+  adjustments     StockAdjustment[]
+  notifications   Notification[]
+  auditLogs       AuditLog[]
+}
+
+model UserLocation {
+  userId     String
+  locationId String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@id([userId, locationId])
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue: categories, ingredients, products & recipes
+// ---------------------------------------------------------------------------
+
+model Category {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  createdAt  DateTime @default(now())
+
+  ingredientDefinitions IngredientDefinition[]
+
+  @@unique([businessId, name])
+}
+
+// The shared, business-wide ingredient catalog ("Coffee Beans", "Whole Milk",
+// …) — one row per ingredient regardless of how many locations stock it.
+// Unit: "G" | "KG" | "ML" | "L" | "PCS" | "PACK" | "BOX"
+// g and ml are the atomic units mass/volume convert to; PCS is atomic for
+// count-based items. PACK and BOX are display conveniences with a packSize
+// multiplier down to PCS. See src/lib/inventory/units.ts.
+model IngredientDefinition {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+  name       String
+  sku        String?
+  unit       String    @default("G") // the unit currentStock/minLevel/costPerUnit are expressed in, at each location
+  packSize   Float?    // for PACK/BOX units: how many base pcs per pack/box
+  createdAt  DateTime  @default(now())
+
+  stocks      Ingredient[]
+  recipeLines RecipeIngredient[]
+
+  @@index([businessId])
+}
+
+// The per-location stock record for one ingredient definition — this is
+// what purchases, sales, waste, counts and the ledger all move.
+model Ingredient {
+  id            String               @id @default(cuid())
+  businessId    String
+  business      Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId    String
+  location      Location             @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  definitionId  String
+  definition    IngredientDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  currentStock  Float                @default(0) // cached balance — always updated via the ledger (lib/inventory/ledger.ts)
+  minLevel      Float                @default(0)
+  costPerUnit   Float                @default(0) // latest known cost, in LKR, per definition's `unit`
+  supplierId    String?
+  supplier      Supplier?            @relation(fields: [supplierId], references: [id])
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  purchaseItems   PurchaseItem[]
+  wasteRecords    WasteRecord[]
+  stockCountItems StockCountItem[]
+  adjustments     StockAdjustment[]
+  transactions    InventoryTransaction[]
+  alerts          Alert[]
+
+  @@unique([locationId, definitionId])
+  @@index([businessId, locationId])
+}
+
+model Product {
+  id            String   @id @default(cuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name          String
+  price         Float
+  prepWastePct  Float    @default(0)
+  available     Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  recipe     RecipeIngredient[]
+  saleItems  SaleItem[]
+
+  @@index([businessId])
+}
+
+model RecipeIngredient {
+  id           String               @id @default(cuid())
+  productId    String
+  product      Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
+  definitionId String
+  definition   IngredientDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  quantity     Float // per single unit of product sold, in `unit`
+  unit         String
+
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// Suppliers & purchasing
+// ---------------------------------------------------------------------------
+
+model Supplier {
+  id            String   @id @default(cuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name          String
+  contactPerson String?
+  phone         String?
+  email         String?
+  address       String?
+  leadTimeDays  Int      @default(3)
+  minOrderValue Float?
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  ingredients Ingredient[]
+  purchases   Purchase[]
+}
+
+// PurchaseStatus: "DRAFT" | "ORDERED" | "RECEIVED" | "CANCELLED"
+model Purchase {
+  id           String   @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId   String
+  location     Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  supplierId   String
+  supplier     Supplier @relation(fields: [supplierId], references: [id])
+  status       String   @default("DRAFT")
+  invoiceRef   String?
+  orderDate    DateTime @default(now())
+  deliveryDate DateTime?
+  receivedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  items PurchaseItem[]
+
+  @@index([businessId, locationId])
+}
+
+model PurchaseItem {
+  id           String     @id @default(cuid())
+  purchaseId   String
+  purchase     Purchase   @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  quantity     Float
+  unit         String
+  unitPrice    Float // LKR per `unit`
+
+  @@index([purchaseId])
+}
+
+// ---------------------------------------------------------------------------
+// Sales
+// ---------------------------------------------------------------------------
+
+// SaleSource: "MANUAL" | "POS" | "API" | "CSV"
+model Sale {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  source     String   @default("MANUAL")
+  total      Float
+  createdAt  DateTime @default(now())
+
+  items SaleItem[]
+
+  @@index([businessId, locationId, createdAt])
+}
+
+model SaleItem {
+  id        String  @id @default(cuid())
+  saleId    String
+  sale      Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int
+  unitPrice Float
+
+  @@index([saleId])
+}
+
+// ---------------------------------------------------------------------------
+// Waste, stock counts, adjustments, and the inventory ledger
+// ---------------------------------------------------------------------------
+
+// WasteReason: "EXPIRED" | "SPOILED" | "DROPPED" | "OVERPRODUCTION" |
+// "PREPARATION_WASTE" | "INCORRECT_ORDER" | "DAMAGED" | "UNKNOWN" | "OTHER"
+model WasteRecord {
+  id           String     @id @default(cuid())
+  businessId   String
+  business     Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId   String
+  location     Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  quantity     Float
+  unit         String
+  reason       String
+  notes        String?
+  photoUrl     String?
+  employeeId   String
+  employee     User       @relation(fields: [employeeId], references: [id])
+  createdAt    DateTime   @default(now())
+
+  @@index([businessId, locationId, createdAt])
+}
+
+// StockCountStatus: "IN_PROGRESS" | "COMPLETED"
+model StockCount {
+  id            String   @id @default(cuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId    String
+  location      Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  performedById String
+  performedBy   User     @relation(fields: [performedById], references: [id])
+  status        String   @default("IN_PROGRESS")
+  createdAt     DateTime @default(now())
+  completedAt   DateTime?
+
+  items StockCountItem[]
+
+  @@index([businessId, locationId, createdAt])
+}
+
+model StockCountItem {
+  id           String     @id @default(cuid())
+  stockCountId String
+  stockCount   StockCount @relation(fields: [stockCountId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  expectedQty  Float
+  actualQty    Float?
+  unit         String
+
+  @@index([stockCountId])
+}
+
+model StockAdjustment {
+  id           String     @id @default(cuid())
+  businessId   String
+  business     Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId   String
+  location     Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  quantity     Float // signed delta, in ingredient's base unit
+  reason       String
+  userId       String
+  user         User       @relation(fields: [userId], references: [id])
+  createdAt    DateTime   @default(now())
+
+  @@index([businessId, locationId, createdAt])
+}
+
+// TransactionType: "PURCHASE" | "SALE_CONSUMPTION" | "WASTE" |
+// "STOCK_ADJUSTMENT" | "STOCK_COUNT" | "TRANSFER" | "RETURN"
+//
+// The ledger. Every inventory-affecting action appends here (via
+// lib/inventory/ledger.ts#postTransaction) in the same DB transaction that
+// updates Ingredient.currentStock — full auditability, never overwritten.
+model InventoryTransaction {
+  id           String   @id @default(cuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId   String
+  location     Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  type         String
+  quantity     Float // signed, in ingredient's base unit (+ increases stock, − decreases)
+  refType      String? // "Sale" | "Purchase" | "WasteRecord" | "StockCount" | "StockAdjustment"
+  refId        String?
+  note         String?
+  createdAt    DateTime @default(now())
+
+  @@index([businessId, locationId, ingredientId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Alerts, notifications, audit log
+// ---------------------------------------------------------------------------
+
+// AlertType: "LOW_STOCK" | "CRITICAL_STOCK" | "RUNOUT_FORECAST" |
+// "CONSUMPTION_INCREASE" | "UNUSUAL_WASTE"
+// AlertSeverity: "INFO" | "WARNING" | "CRITICAL"
+// AlertStatus: "OPEN" | "ACKNOWLEDGED" | "RESOLVED"
+model Alert {
+  id           String      @id @default(cuid())
+  businessId   String
+  business     Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId   String
+  location     Location    @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  ingredientId String?
+  ingredient   Ingredient? @relation(fields: [ingredientId], references: [id])
+  type         String
+  severity     String
+  message      String
+  status       String      @default("OPEN")
+  createdAt    DateTime    @default(now())
+
+  @@unique([ingredientId, type])
+  @@index([businessId, locationId, status])
+}
+
+// NotificationChannel: "IN_APP" | "EMAIL" | "PUSH" | "WHATSAPP"
+model Notification {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  channel    String   @default("IN_APP")
+  title      String
+  body       String
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+model AuditLog {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  locationId String?
+  location   Location? @relation(fields: [locationId], references: [id])
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  action     String
+  entityType String
+  entityId   String
+  oldValue   String? // JSON
+  newValue   String? // JSON
+  createdAt  DateTime  @default(now())
+
+  @@index([businessId, createdAt])
+}
